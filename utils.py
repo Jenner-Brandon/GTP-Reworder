@@ -13,10 +13,13 @@ from numpy.linalg import norm
 import os
 import hashlib
 import tiktoken
+# Get tokenizer from tiktoken module
 tokenizer = tiktoken.get_encoding("cl100k_base")
+# Load OpenAI API key from file
 with open("openai_api_key.txt", 'r', encoding='utf8') as f:
 	openai.api_key = f.readlines()[0].strip()
 print("Loaded openai api key.")
+# Define color codes for console output
 class bcolors:
     HEADER = '\033[95m'
     OKBLUE = '\033[94m'
@@ -29,26 +32,26 @@ class bcolors:
     UNDERLINE = '\033[4m'
 
 
-
+# Function to retrieve text from various sources
 def get_text(text_path):
 	url = text_path
 	suffix = os.path.splitext(text_path)[-1]
-	if validators.url(url):
+	if validators.url(url): # If input is a URL
 		headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",}
-		response = requests.get(url, headers=headers)
-		if response.status_code == 200:
-			soup = BeautifulSoup(response.content, "html.parser")
-			text = soup.get_text()
+		response = requests.get(url, headers=headers) # Send a GET request to the URL with headers
+		if response.status_code == 200: # If the response is successful
+			soup = BeautifulSoup(response.content, "html.parser") # Use BeautifulSoup to parse HTML content
+			text = soup.get_text() # Extract text content from HTML
 		else:
 			raise ValueError(f"Invalid URL! Status code {response.status_code}.")
-	elif suffix == ".pdf":
+	elif suffix == ".pdf": # If input is a PDF file
 		full_text = ""
 		num_pages = 0
-		with fitz.open(text_path) as doc:
+		with fitz.open(text_path) as doc: # Use fitz module to open PDF file
 			for page in doc:
 				num_pages += 1
-				text = page.get_text()
-				full_text += text + "\n"
+				text = page.get_text() # Extract text content from page
+				full_text += text + "\n" # Append text content to full text
 		text = f"This is a {num_pages}-page document.\n" + full_text
 	elif ".doc" in suffix:
 		doc = docx.Document(text_path)
@@ -82,57 +85,71 @@ def get_summary(chunk):
 	return summary
 
 def store_info(text, memory_path, chunk_sz = 800, max_memory = 100):
-	info = []
-	text = text.replace("\n", " ").split()
-	# raise error if the anticipated api usage is too massive
-	if (len(text) / chunk_sz) >= 1000:
-		raise ValueError("Processing is aborted due to high anticipated costs.")
-	for idx in tqdm(range(0, len(text), chunk_sz)):
-		chunk = " ".join(text[idx: idx + chunk_sz])
-		if len(tokenizer.encode(chunk)) > chunk_sz * 3:
-			print("Skipped an uninformative chunk.")
-			continue
-		summary = get_summary(chunk)
-		embd = get_embedding(chunk)
-		summary_embd = get_embedding(summary)
-		item = {
-			"id": len(info),
-			"text": chunk,
-			"embd": embd,
-			"summary": summary,
-			"summary_embd": summary_embd,
-		}
-		info.append(item)
-		time.sleep(3)  # up to 20 api calls per min
-	with jsonlines.open(memory_path, mode="w") as f:
-		f.write(info)
-		print("Finish storing info.")
+    # Initialize an empty list to store information
+    info = []
+    # Replace newline characters with spaces and split the text into chunks
+    text = text.replace("\n", " ").split()
+    # Raise an error if the anticipated API usage is too massive
+    if (len(text) / chunk_sz) >= 1000:
+        raise ValueError("Processing is aborted due to high anticipated costs.")
+    # Iterate over the text in chunks and store relevant information
+    for idx in tqdm(range(0, len(text), chunk_sz)):
+        # Join the chunk back into a string
+        chunk = " ".join(text[idx: idx + chunk_sz])
+        # Skip uninformative chunks that are too long for the model to handle
+        if len(tokenizer.encode(chunk)) > chunk_sz * 3:
+            print("Skipped an uninformative chunk.")
+            continue
+        # Get a summary and embeddings for the chunk
+        summary = get_summary(chunk)
+        embd = get_embedding(chunk)
+        summary_embd = get_embedding(summary)
+        # Store the chunk's information in a dictionary and append it to the info list
+        item = {
+            "id": len(info),
+            "text": chunk,
+            "embd": embd,
+            "summary": summary,
+            "summary_embd": summary_embd,
+        }
+        info.append(item)
+        # Sleep to avoid exceeding the API rate limit
+        time.sleep(3)  # up to 20 API calls per minute
+    # Write the info to a JSON lines file
+    with jsonlines.open(memory_path, mode="w") as f:
+        f.write(info)
+        print("Finish storing info.")
 
+# This function prompts the user to input a question and returns the question string
 def get_question():
-	q = input("Enter your question: ")
-	return q
+    q = input("Enter your question: ")
+    return q
 
+# This function loads the previously stored information from a memory file
+# and returns it as a list of dictionaries
 def load_info(memory_path):
-	with open(memory_path, 'r', encoding='utf8') as f:
-		for line in f:
-			info = json.loads(line)
-	return info
+    with open(memory_path, 'r', encoding='utf8') as f:
+        for line in f:
+            info = json.loads(line)
+    return info
 
+# This function retrieves the top 3 indices of the most relevant chunks of text 
+# based on cosine similarity scores between the question embedding and the text embeddings
 def retrieve(q_embd, info):
-	# return the indices of top three related texts
-	text_embds = []
-	summary_embds = []
-	for item in info:
-		text_embds.append(item["embd"])
-		summary_embds.append(item["summary_embd"])
-	# compute the cos sim between info_embds and q_embd
-	text_cos_sims = np.dot(text_embds, q_embd) / (norm(text_embds, axis=1) * norm(q_embd))
-	summary_cos_sims = np.dot(summary_embds, q_embd) / (norm(summary_embds, axis=1) * norm(q_embd))
-	cos_sims = text_cos_sims + summary_cos_sims
-	top_args = np.argsort(cos_sims).tolist()
-	top_args.reverse()
-	indices = top_args[0:3]
-	return indices
+    text_embds = []
+    summary_embds = []
+    for item in info:
+        text_embds.append(item["embd"])
+        summary_embds.append(item["summary_embd"])
+    # compute the cos sim between info_embds and q_embd
+    text_cos_sims = np.dot(text_embds, q_embd) / (norm(text_embds, axis=1) * norm(q_embd))
+    summary_cos_sims = np.dot(summary_embds, q_embd) / (norm(summary_embds, axis=1) * norm(q_embd))
+    cos_sims = text_cos_sims + summary_cos_sims
+    top_args = np.argsort(cos_sims).tolist()
+    top_args.reverse()
+    indices = top_args[0:3]
+    return indices
+
 
 def chatGPT_api(messages):
 	completion = openai.ChatCompletion.create(
